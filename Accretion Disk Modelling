@@ -1,0 +1,123 @@
+from spectres import spectres
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy import integrate
+import pandas as pd
+
+
+def Accretion_Disk_Model(vars, x, Data, eps, wav_low, wav_up, wav_step):
+    """
+    Accretion disk model:
+    Input:
+        vars = variables for fitting in this case solely Mass accretion rate
+        x = array to define wavelengths
+        Data = Observation band fluxes
+        eps = array of error associated with 'Data'
+        NOTE: Requires order of Data and eps to be the same as the order of array model
+              wrt filters
+        wav_low = lower end of wavelength array
+        wav_up = upper end of wavelength array
+        wave_step = step of wavelength array
+    Output:
+        Chi value for attempted fit.
+    
+    """
+    interp = np.arange(wav_low, wav_up, wav_step)
+    Mdot = vars[0]
+    Rmag = ((mag_mo**4)/(2*G*M*(Mdot**2)))**(1/7)
+    
+    def Tstar(R): #nominal Tstar estimate for disc spectra
+        T = ((3*G*M*Mdot)/(8 * np.pi * (R**3) * sigma)) ** (0.25)
+        return T
+
+    def T(R): #disc temperature variation
+        Temp = Tstar(R) * (1 - (Rstar/R)**0.5)**(0.25)
+        #Temp = Tstar * (R/Rstar) ** (-0.75)
+        return Temp
+
+    def frac(i): #fraction of disc to evaluate for disc fitting
+        radius_frac = np.logspace(np.log10(Rmag),np.log10(Rcirc),100)
+        return radius_frac[i]
+
+    def Constant(mu): #constants used in disc spectra
+        constant = (4 * np.pi * h * np.cos(i1) * mu**3)/((c**2) * (D**2))
+        return constant
+
+    def Shell(i): #defining area to integrate over for disc spectra
+        shell = (frac(i+1)**2) - (frac(i)**2)
+        return shell
+    
+    def Boltzmann(R,mu): #boltzmann factor to interate over 
+        boltz = 1/(np.exp((h * mu)/(k * T(R))) - 1)
+        return boltz
+    
+    def Flux(mu): #defining final flux from the disc iterating over defined limits
+        flux_s = 0
+        for i in range(0,99):
+            r = (frac(i+1) + frac(i))/2
+            flux_s = flux_s + (Shell(i) * Boltzmann(r, mu))
+        flux = Constant(mu) * flux_s
+        return flux
+    
+    def freq_wav(freq, flux): #converting frequency flux to wavelength flux
+        flux_wav = []
+        freqnp = np.array(freq)
+        for i in range(0,len(flux)):
+             flux_wav.append(flux[i] * ((freq[i]**2)/2.998e8))
+        wav = np.array((2.998e8/freq)) * 1e10
+        flux_wav_fin = np.array(flux_wav) * (1/1e10)
+        return wav, flux_wav_fin
+    
+    def specres(wav_disk, flux_disk, wav_don, flux_don, wav_WD, flux_WD,x):
+        #Recasting all components to the same wavelength array so flux sum can be outputted
+        wav_disk_flip = np.flip(wav_disk)
+        flux_disk_flip = np.flip(flux_disk)
+    
+        regrid_disk = np.arange(3000,9000,500)   #Change for different wavelength ranges 
+        model_disk = spectres(regrid_disk, wav_disk_flip, flux_disk_flip, verbose = False)
+        disk_interp = np.interp(interp, regrid_disk, model_disk)
+    
+        model_WD = spectres(x, wav_WD, flux_WD, verbose = False)
+        model_Don = spectres(x, wav_don, flux_don, verbose = False)
+    
+        Flux_sum = model_WD + model_Don + disk_interp
+    
+        return Flux_sum
+    
+    def Response(wav, frac, x):
+        #Used for interpolating the CCD Response to a higher resolution 
+        array = np.arange(3000,9000,100) #Change as needed for resolution
+        init = spectres(array, wav, frac, fill = 0, verbose = False)
+        interp_r = np.interp(x, array, init)
+        return interp_r
+    
+    def Flux_integral(F, R, T):
+        #Calculating synthetic photometry integral 
+        X = F * R * T
+        Y = R * T
+        top_I = integrate.simpson(X, dx = 5)
+        bottom_I = integrate.simpson(Y, dx = 5)
+        F = top_I/bottom_I
+        return F
+    
+    frequency = np.logspace(10, 17, 1000)
+    flux_fin = []
+    wavelength = []
+    for i in range(0,len(frequency)):
+        flux_fin.append(Flux(frequency[i]))
+    
+    wav_disk, flux_wav_disk = freq_wav(frequency, flux_fin)    
+    
+    F_T = specres(wav_disk, flux_wav_disk, wav_Don, flux_Don, wav_WD, flux_WD, x)
+    RCCD = Response(wav_RCCD, frac_RCCD, x)
+    interp_rfil = spectres(x, wav_rfil, frac_rfil, fill = 0, verbose = False)
+    interp_ifil = spectres(x, wav_ifil, frac_ifil, fill = 0, verbose = False)
+    interp_gfil = spectres(x, wav_gfil, frac_gfil, fill = 0, verbose = False)
+    
+    F_g = Flux_integral(F_T, RCCD, interp_gfil) 
+    F_r = Flux_integral(F_T, RCCD, interp_rfil)
+    F_i = Flux_integral(F_T, RCCD, interp_ifil) 
+    
+    Model = [F_g, F_r, F_i]
+    #Returning chi value for attempted fit
+    return (Data - Model)/eps
